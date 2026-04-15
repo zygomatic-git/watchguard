@@ -297,7 +297,7 @@ Remove-Item $tempPy -Force -ErrorAction SilentlyContinue
 Write-Header "ADIM 4: Bot Scripti"
 
 $scriptDest = Join-Path $datDir "watchguard_v3.pyw"
-$scriptUrl  = "PLACEHOLDER_GITHUB_RAW_URL"  # <- Kullanici buraya GitHub raw URL'sini girer
+$scriptUrl  = "https://raw.githubusercontent.com/zygomatic-git/watchguard/main/watchguard_v3.pyw"
 
 $localScript = Join-Path $PSScriptRoot "watchguard_v3.pyw"
 
