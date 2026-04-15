@@ -1414,12 +1414,22 @@ class TelegramBotManager:
         kb.add(
             KeyboardButton('/processes 📋'),
             KeyboardButton('/window 🖥️'),
-            KeyboardButton('/mic 🎙️'),
+            KeyboardButton('/monitors 📺'),
         )
         kb.add(
+            KeyboardButton('/mic 🎙️'),
             KeyboardButton('/security 🔐'),
+            KeyboardButton('/quiethours 🌙'),
+        )
+        kb.add(
             KeyboardButton('/lock 🔒'),
+            KeyboardButton('/restart 🔄'),
+            KeyboardButton('/ping 🏓'),
+        )
+        kb.add(
             KeyboardButton('/computers 💻'),
+            KeyboardButton('/update ⬆️'),
+            KeyboardButton('/help ❓'),
         )
         return kb
 
@@ -1519,52 +1529,59 @@ class TelegramBotManager:
         @bot.message_handler(commands=['start', 'help'])
         @owner
         def cmd_help(msg):
-            shell_ex = (
+            pin_status = "✅ PIN korumalı" if cfg.shell_pin else "⚠️ PIN yok"
+            shell_ex   = (
                 "<code>/shell SIFRE komut</code>" if cfg.shell_pin
                 else "<code>/shell komut</code>"
             )
             bot.send_message(msg.chat.id, (
-                f"🤖 <b>Watchguard v3.0</b> — {identity.display_name()}\n"
+                f"🤖 <b>Watchguard v3.0</b>\n"
+                f"📍 {identity.display_name()}\n"
                 "\n"
-                "<b>💻 Bilgisayarlar</b>\n"
-                "/computers — Online bilgisayarları listele, seç\n"
-                "/ping      — Tüm bilgisayarları pinle (gecikme + durum)\n"
+                "─────────────────────────\n"
+                "💻 <b>BİLGİSAYAR YÖNETİMİ</b>\n"
+                "/computers — Tüm bilgisayarları listele ve seç\n"
+                "/ping      — Tüm bilgisayarları pinle (gecikme + seçim durumu)\n"
                 "\n"
-                "<b>📷 Görüntü</b>\n"
-                "/ss        — Ekran görüntüsü (tüm monitörler)\n"
-                "/rec       — Ekran videosu kaydı\n"
-                "/monitors  — Monitör listesi\n"
+                "📷 <b>GÖRÜNTÜ</b>\n"
+                "/ss             — Tüm monitörlerin ekran görüntüsü\n"
+                f"/rec            — {Config.VIDEO_DURATION}s ekran videosu kaydı\n"
+                "/monitors       — Bağlı monitörleri listele\n"
                 "\n"
-                "<b>💻 Sistem</b>\n"
-                "/myinfo    — CPU, RAM, disk, uptime\n"
-                "/window    — Şu an aktif pencere\n"
-                "/processes — Top 20 işlem (CPU+RAM)\n"
-                "/killps &lt;PID&gt; — İşlemi sonlandır\n"
+                "🖥️ <b>SİSTEM</b>\n"
+                "/myinfo         — CPU, RAM, disk, pil, uptime\n"
+                "/window         — Şu an aktif pencere başlığı\n"
+                "/processes      — CPU+RAM'e göre top 20 işlem\n"
+                "/killps &lt;PID&gt;  — İşlemi PID ile sonlandır\n"
                 "\n"
-                "<b>🎙️ Ses</b>\n"
-                f"/mic          — Mikrofon kaydı ({Config.MIC_DURATION}s)\n"
-                "/mic &lt;süre&gt;  — Belirli süre: <code>/mic 30</code> · <code>/mic 2m</code>\n"
-                f"/mic on       — Sürekli kayıt başlat (1 dk'lık döngü, maks {Config.MIC_MAX_DURATION // 60} dk)\n"
-                "/mic off      — Sürekli kaydı durdur\n"
+                "🎙️ <b>MİKROFON</b>\n"
+                f"/mic            — Kayıt ({Config.MIC_DURATION}s varsayılan)\n"
+                "/mic &lt;süre&gt;    — Özel süre: <code>/mic 30</code> veya <code>/mic 2m</code>\n"
+                f"/mic on         — Sürekli kayıt (1 dk döngü, maks {Config.MIC_MAX_DURATION // 60} dk)\n"
+                "/mic off        — Sürekli kaydı durdur\n"
                 "\n"
-                "<b>⚙️ Uzaktan Kontrol</b>\n"
-                f"/shell — Komut çalıştır: {shell_ex}\n"
-                "/msg &lt;metin&gt; — Bilgisayarda mesaj kutusu göster (yanıt alınabilir)\n"
-                "/lock     — Ekranı kilitle\n"
-                "/restart  — Bilgisayarı yeniden başlat\n"
-                "/shutdown — Bilgisayarı kapat\n"
+                "⚙️ <b>UZAKTAN KONTROL</b>\n"
+                f"/shell          — Kabuk komutu çalıştır [{pin_status}]\n"
+                f"  Kullanım: {shell_ex}\n"
+                "  Örnek: <code>dir</code> · <code>ipconfig</code> · <code>tasklist</code>\n"
+                "/msg &lt;metin&gt;   — Ekranda mesaj kutusu göster (yanıt alınabilir)\n"
+                "/lock           — Ekranı kilitle\n"
+                "/restart        — Bilgisayarı yeniden başlat (10s)\n"
+                "/shutdown       — Bilgisayarı kapat (10s)\n"
                 "\n"
-                "<b>🔐 Güvenlik</b>\n"
-                "/security    — Hareket algılama modunu aç/kapa\n"
-                f"/quiethours  — Sessiz saatleri aç/kapa ({Config.QUIET_HOURS_START:02d}:00–{Config.QUIET_HOURS_END:02d}:00)\n"
+                "🔐 <b>GÜVENLİK</b>\n"
+                "/security       — Hareket algılama modunu aç/kapa\n"
+                f"/quiethours     — Sessiz saatleri aç/kapa\n"
+                f"  ({Config.QUIET_HOURS_START:02d}:00–{Config.QUIET_HOURS_END:02d}:00 arası bildirim gönderilmez)\n"
                 "\n"
-                "<b>📋 Log</b>\n"
-                "/logs        — Son 30 log satırı\n"
-                "/logs &lt;n&gt;    — Son n satır (maks 200)\n"
-                "/clearlog    — Log geçmişini temizle\n"
+                "📋 <b>LOG</b>\n"
+                "/logs           — Son 30 log satırı\n"
+                "/logs &lt;n&gt;       — Son n satır (maks 200)\n"
+                "/clearlog       — Log geçmişini temizle\n"
                 "\n"
-                "<b>🔄 Güncelleme</b>\n"
-                "/update      — GitHub'tan en son sürümü indir ve uygula"
+                "🔄 <b>GÜNCELLEME</b>\n"
+                "/update         — GitHub'tan en son sürümü indir ve uygula\n"
+                "─────────────────────────"
             ), reply_markup=self._reply_keyboard())
 
         # ── /security ─────────────────────────────────────────────────────────
