@@ -1,0 +1,21 @@
+# Gizli veriler — asla commit edilmez
+watchguard.dat
+
+# Log dosyaları
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Geçici dosyalar
+*.tmp
+*.mp4
+*.webm
+*.ogg
+*.jpg
+
+# IDE
+.vscode/
+.idea/
