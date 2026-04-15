@@ -272,6 +272,11 @@ class Config:
     COMPUTER_NAME  = None    # Örn: "Ev Bilgisayarı" | None → user@hostname
     COMPUTER_EMOJI = '✈️'  # Örn: "🏠" | None → rastgele
 
+    # ── Güncelleme ────────────────────────────────────────────────────────────
+    GITHUB_RAW_URL = (
+        "https://raw.githubusercontent.com/zygomatic-git/watchguard/main/watchguard_v3.pyw"
+    )
+
     # ── Bellek içi log buffer ─────────────────────────────────────────────────
     LOG_BUFFER_SIZE     = 200   # Bellekte tutulacak maksimum satır sayısı
 
@@ -1439,6 +1444,7 @@ class TelegramBotManager:
                 BotCommand('lock',       'Ekranı kilitle'),
                 BotCommand('logs',       'Son logları göster: /logs veya /logs 50'),
                 BotCommand('clearlog',   'Log geçmişini temizle'),
+                BotCommand('update',     'GitHub\'tan en son sürümü indir ve uygula'),
                 BotCommand('restart',    'Yeniden başlat'),
                 BotCommand('shutdown',   'Kapat'),
                 BotCommand('help',       'Yardım'),
@@ -1555,7 +1561,10 @@ class TelegramBotManager:
                 "<b>📋 Log</b>\n"
                 "/logs        — Son 30 log satırı\n"
                 "/logs &lt;n&gt;    — Son n satır (maks 200)\n"
-                "/clearlog    — Log geçmişini temizle"
+                "/clearlog    — Log geçmişini temizle\n"
+                "\n"
+                "<b>🔄 Güncelleme</b>\n"
+                "/update      — GitHub'tan en son sürümü indir ve uygula"
             ), reply_markup=self._reply_keyboard())
 
         # ── /security ─────────────────────────────────────────────────────────
@@ -1836,6 +1845,23 @@ class TelegramBotManager:
             bot.send_message(msg.chat.id,
                 f"🗑️ Log geçmişi temizlendi — {identity.display_name()}")
 
+        # ── /update ───────────────────────────────────────────────────────────
+        @bot.message_handler(commands=['update'])
+        @owner
+        def cmd_update(msg):
+            if not self.settings.get('is_selected'):
+                return
+            kb = InlineKeyboardMarkup()
+            kb.row(
+                InlineKeyboardButton("✅ Güncelle", callback_data="update_confirm"),
+                InlineKeyboardButton("❌ İptal",    callback_data="update_cancel"),
+            )
+            bot.send_message(msg.chat.id,
+                f"🔄 <b>Güncelleme</b> — {identity.display_name()}\n\n"
+                f"GitHub'tan en son sürüm indirilip bot yeniden başlatılacak.\n"
+                f"<code>{Config.GITHUB_RAW_URL}</code>",
+                reply_markup=kb)
+
         # ── Callback handler ──────────────────────────────────────────────────
         @bot.callback_query_handler(func=lambda call: True)
         def callback_handler(call):
@@ -1860,6 +1886,19 @@ class TelegramBotManager:
 
             # Seçili olmayan bilgisayar inline butonları işlemez
             if not self.settings.get('is_selected'):
+                return
+
+            if data == "update_confirm":
+                bot.edit_message_text(
+                    f"🔄 Güncelleme başlatıldı — {identity.display_name()}\n"
+                    "İndiriliyor...", cid, mid)
+                threading.Thread(
+                    target=self._handle_update,
+                    args=(cid, mid), daemon=True
+                ).start()
+                return
+            elif data == "update_cancel":
+                bot.edit_message_text("❌ Güncelleme iptal edildi.", cid, mid)
                 return
 
             if data == "screenshot_menu":
@@ -2046,6 +2085,51 @@ class TelegramBotManager:
         if cmd:
             creationflags = subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
             subprocess.Popen(cmd, creationflags=creationflags)
+
+    def _handle_update(self, chat_id: int, message_id: int):
+        """GitHub'tan en son sürümü indir, obfüske et, yeniden başlat."""
+        import urllib.request
+        dest = os.path.abspath(__file__)
+        tmp  = dest + '.tmp'
+        try:
+            # 1) İndir
+            urllib.request.urlretrieve(Config.GITHUB_RAW_URL, tmp)
+
+            # 2) Obfüske et
+            with open(tmp, 'r', encoding='utf-8') as f:
+                source = f.read()
+            encoded = base64.b64encode(zlib.compress(source.encode('utf-8'))).decode('ascii')
+            loader  = (
+                "import zlib,base64;exec(zlib.decompress("
+                f"base64.b64decode(b'{encoded}')).decode())"
+            )
+            with open(tmp, 'w', encoding='utf-8') as f:
+                f.write(loader)
+
+            # 3) Mevcut dosyanın üzerine yaz
+            os.replace(tmp, dest)
+
+            self.bot.edit_message_text(
+                f"✅ Güncelleme tamamlandı — {self.identity.display_name()}\n"
+                "Bot yeniden başlatılıyor...",
+                chat_id, message_id)
+
+            # 4) Yeniden başlat
+            time.sleep(1)
+            subprocess.Popen(
+                [sys.executable, dest],
+                creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
+            )
+            sys.exit(0)
+
+        except Exception as e:
+            self.logger.error(f"Güncelleme hatası: {e}")
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            self.bot.edit_message_text(
+                f"❌ Güncelleme başarısız: {e}", chat_id, message_id)
 
     def _handle_kill_process(self, msg):
         parts = msg.text.split(maxsplit=1)
