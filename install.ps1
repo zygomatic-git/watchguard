@@ -7,6 +7,8 @@
 #>
 
 # ── UTF-8 konsol ─────────────────────────────────────────────────────────────
+$null = cmd /c "chcp 65001"
+[Console]::InputEncoding  = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding            = [System.Text.Encoding]::UTF8
 
