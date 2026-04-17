@@ -475,3 +475,7 @@ Write-Host "  Bir sonraki oturum acilisinda otomatik olarak baslar." -Foreground
 Write-Host ""
 
 Read-Host "Cikis icin Enter'a basin"
+
+# ── Kendini sil ───────────────────────────────────────────────────────────────
+# Kurulum tamamlandi, install.ps1 diskte kalmasin
+Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
