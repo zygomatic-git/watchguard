@@ -1311,30 +1311,27 @@ class MicRecorder:
 
     def _vad_check(self, audio_flat: 'np.ndarray', sr: int) -> bool:
         """
-        Returns True (silent/no speech) or False (speech detected).
+        Returns True (silent / no speech) or False (speech detected).
 
-        Uses webrtcvad if available (accurate speech detector).
-        Falls back to simple energy check if webrtcvad is not installed.
+        Priority:
+          1. webrtcvad  — most accurate, needs C extension (Python ≤ 3.11)
+          2. Spectral   — FFT speech-band analysis via numpy (always available)
         """
-        # ── webrtcvad (preferred) ────────────────────────────────────────────
+        # ── 1. webrtcvad ─────────────────────────────────────────────────────
         try:
             import webrtcvad
             import numpy as np
 
-            vad = webrtcvad.Vad(2)          # aggressiveness 0–3 (2 = balanced)
-
-            # webrtcvad needs 10/20/30 ms int16 PCM frames
-            frame_ms   = 20
-            frame_size = int(sr * frame_ms / 1000)   # 320 samples @ 16 kHz
-            frame_bytes = frame_size * 2              # int16
+            vad        = webrtcvad.Vad(2)
+            frame_size = int(sr * 20 / 1000)     # 20 ms → 320 samples @ 16 kHz
+            frame_bytes = frame_size * 2
 
             raw = audio_flat.astype(np.int16).tobytes()
             speech = total = 0
             for i in range(0, len(raw) - frame_bytes + 1, frame_bytes):
-                frame = raw[i:i + frame_bytes]
                 total += 1
                 try:
-                    if vad.is_speech(frame, sr):
+                    if vad.is_speech(raw[i:i + frame_bytes], sr):
                         speech += 1
                 except Exception:
                     pass
@@ -1342,20 +1339,60 @@ class MicRecorder:
             if total == 0:
                 return True
             ratio = speech / total
-            self.logger.info(f"VAD (webrtc): {speech}/{total} speech frames ({ratio:.1%})")
-            return ratio < 0.08          # < 8 % speech frames → silent
+            self.logger.info(f"VAD (webrtc): {speech}/{total} frames  ({ratio:.1%})")
+            return ratio < 0.08
 
         except ImportError:
             pass
         except Exception as e:
             self.logger.warning(f"webrtcvad error: {e}")
 
-        # ── energy fallback ──────────────────────────────────────────────────
+        # ── 2. Spectral VAD (numpy — no extra deps) ───────────────────────────
+        # Speech energy is concentrated in 300–3400 Hz.
+        # Keyboard clicks / sniffing are broadband or low-freq — won't dominate
+        # the speech band across many consecutive frames.
+        try:
+            import numpy as np
+
+            frame_size = int(sr * 20 / 1000)     # 320 samples per frame
+            freqs      = np.fft.rfftfreq(frame_size, 1.0 / sr)
+            sp_mask    = (freqs >= 300) & (freqs <= 3400)
+
+            speech = total = 0
+            samples = audio_flat.astype(np.float32)
+
+            for i in range(0, len(samples) - frame_size + 1, frame_size):
+                frame = samples[i:i + frame_size]
+
+                # skip truly silent frames (below noise floor)
+                rms = np.sqrt(np.mean(frame ** 2)) / 32768.0
+                if rms < 0.004:
+                    total += 1
+                    continue
+
+                fft          = np.abs(np.fft.rfft(frame)) ** 2
+                total_e      = fft.sum() + 1e-10
+                speech_ratio = fft[sp_mask].sum() / total_e
+
+                total += 1
+                if speech_ratio > 0.30:      # speech band dominant
+                    speech += 1
+
+            if total == 0:
+                return True
+            ratio = speech / total
+            self.logger.info(f"VAD (spectral): {speech}/{total} frames ({ratio:.1%})")
+            return ratio < 0.08
+
+        except Exception as e:
+            self.logger.warning(f"Spectral VAD error: {e}")
+
+        # ── 3. Energy fallback (last resort) ─────────────────────────────────
         import numpy as np
-        flat      = audio_flat.astype(np.float32) / 32768.0
-        n_above   = int(np.sum(np.abs(flat) > self.VAD_THRESHOLD))
-        ratio     = n_above / max(len(flat), 1)
-        self.logger.info(f"VAD (energy): {n_above}/{len(flat)} samples above threshold ({ratio:.1%})")
+        flat    = audio_flat.astype(np.float32) / 32768.0
+        n_above = int(np.sum(np.abs(flat) > self.VAD_THRESHOLD))
+        ratio   = n_above / max(len(flat), 1)
+        self.logger.info(f"VAD (energy): {ratio:.1%} above threshold")
         return ratio < self.VAD_MIN_RATIO
 
     # ── encoders ──────────────────────────────────────────────────────────────
