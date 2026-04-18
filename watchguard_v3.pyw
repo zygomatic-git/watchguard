@@ -1208,8 +1208,8 @@ class MicRecorder:
     SAMPLE_RATE   = 16000
     BLOCK_SIZE    = 1600     # callback block = 0.1 s  (low latency for stop)
     CHUNK_SECONDS = 30       # continuous-mode chunk length
-    VAD_THRESHOLD = 0.003    # normalised amplitude threshold  (0.0 – 1.0)
-    VAD_MIN_RATIO = 0.02     # fraction of samples that must exceed threshold
+    VAD_THRESHOLD = 0.002    # normalised amplitude threshold  (0.0 – 1.0)
+    VAD_MIN_RATIO = 0.005    # fraction of samples that must exceed threshold
 
     def __init__(self, logger: LogManager):
         self.logger     = logger
