@@ -1292,10 +1292,7 @@ class MicRecorder:
                 buf.name = "mic.wav"
 
             size_kb = buf.getbuffer().nbytes / 1024
-            self.logger.info(
-                f"Mic done: {size_kb:.1f} KB [{fmt}]  silent={is_silent}  "
-                f"active={n_above}/{len(flat)} samples"
-            )
+            self.logger.info(f"Mic done: {size_kb:.1f} KB [{fmt}]  silent={is_silent}")
             self.last_error = None
             return buf, is_silent
 
