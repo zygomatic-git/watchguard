@@ -1206,9 +1206,10 @@ class MicRecorder:
     """
 
     SAMPLE_RATE   = 16000
+    BLOCK_SIZE    = 1600     # callback block = 0.1 s  (low latency for stop)
     CHUNK_SECONDS = 30       # continuous-mode chunk length
-    VAD_THRESHOLD = 0.015    # normalised RMS threshold  (0.0 – 1.0)
-    VAD_MIN_RATIO = 0.08     # fraction of samples that must exceed threshold
+    VAD_THRESHOLD = 0.008    # normalised amplitude threshold  (0.0 – 1.0)
+    VAD_MIN_RATIO = 0.04     # fraction of samples that must exceed threshold
 
     def __init__(self, logger: LogManager):
         self.logger     = logger
@@ -1225,12 +1226,16 @@ class MicRecorder:
         except Exception:
             return False
 
-    def record(self, duration: int) -> Optional[Tuple[io.BytesIO, bool]]:
+    def record(self, duration: int,
+               stop_event: Optional[threading.Event] = None
+               ) -> Optional[Tuple[io.BytesIO, bool]]:
         """
-        Record *duration* seconds from the default input device.
+        Record up to *duration* seconds using a non-blocking InputStream.
+
+        If *stop_event* is set mid-recording the capture stops early and
+        whatever was collected so far is encoded + returned.
 
         Returns (wav_buf: BytesIO, is_silent: bool) on success, None on error.
-        The BytesIO is positioned at 0 and ready to send directly to Telegram.
         """
         with self._lock:
             if self._recording:
@@ -1242,18 +1247,41 @@ class MicRecorder:
             import sounddevice as sd
             import numpy as np
             import wave
+            import queue as _queue
 
-            sr     = self.SAMPLE_RATE
-            frames = int(duration * sr)
+            sr           = self.SAMPLE_RATE
+            target       = int(duration * sr)
+            audio_q: _queue.Queue = _queue.Queue()
+
+            def _cb(indata, frames, time_info, status):
+                audio_q.put(indata.copy())
+
+            chunks: list = []
+            collected    = 0
 
             self.logger.info(f"Mic recording: {duration}s")
-            audio = sd.rec(frames, samplerate=sr, channels=1,
-                           dtype='int16', blocking=True)  # blocks until done
+            with sd.InputStream(samplerate=sr, channels=1, dtype='int16',
+                                callback=_cb, blocksize=self.BLOCK_SIZE):
+                while collected < target:
+                    if stop_event and stop_event.is_set():
+                        break
+                    try:
+                        data = audio_q.get(timeout=0.2)
+                        chunks.append(data)
+                        collected += len(data)
+                    except _queue.Empty:
+                        pass
+
+            if not chunks:
+                self.last_error = "No audio captured"
+                return None
+
+            audio = np.concatenate(chunks)
 
             # ── VAD: energy check ────────────────────────────────────────────
-            flat       = audio.flatten().astype(np.float32) / 32768.0
-            n_above    = int(np.sum(np.abs(flat) > self.VAD_THRESHOLD))
-            is_silent  = (n_above / max(len(flat), 1)) < self.VAD_MIN_RATIO
+            flat      = audio.flatten().astype(np.float32) / 32768.0
+            n_above   = int(np.sum(np.abs(flat) > self.VAD_THRESHOLD))
+            is_silent = (n_above / max(len(flat), 1)) < self.VAD_MIN_RATIO
 
             # ── Encode to in-memory WAV (stdlib, always available) ───────────
             buf = io.BytesIO()
@@ -2236,22 +2264,25 @@ class TelegramBotManager:
     def _handle_mic_continuous(self, chat_id: int):
         """
         30 saniyelik VAD'lı sürekli kayıt döngüsü.
-        Sessiz chunk'lar gönderilmez; /mic off ile durur.
+        stop_event record()'a geçirilir — /mic off anında etkili olur.
         """
-        chunk   = MicRecorder.CHUNK_SECONDS
-        segment = 0
+        chunk         = MicRecorder.CHUNK_SECONDS
+        segment       = 0
         silent_streak = 0
         SILENT_NOTIFY = 4   # 4 × 30 s = 2 dakika sessizlik bildirimi
 
         while not self._mic_stop_event.is_set():
-            result = self.mic_recorder.record(chunk)
+
+            # stop_event'i record'a ver — kayıt ortasında kesilirse anında durur
+            result = self.mic_recorder.record(chunk, stop_event=self._mic_stop_event)
 
             if self._mic_stop_event.is_set():
                 break
 
             if result is None:
                 err = self.mic_recorder.last_error or "Bilinmeyen hata"
-                self.bot.send_message(chat_id, f"⚠️ Kayıt hatası: {err} — 3s sonra yeniden deneniyor")
+                self.bot.send_message(chat_id,
+                    f"⚠️ Kayıt hatası: {err} — 3s sonra yeniden deneniyor")
                 time.sleep(3)
                 continue
 
@@ -2259,12 +2290,12 @@ class TelegramBotManager:
 
             if is_silent:
                 silent_streak += 1
+                self.logger.info(f"Mic chunk silent (streak {silent_streak})")
                 if silent_streak == SILENT_NOTIFY:
                     self.bot.send_message(
                         chat_id,
-                        f"🔇 {silent_streak * chunk}s sessizlik — kayıt devam ediyor"
+                        f"🔇 {silent_streak * chunk}s sessizlik algılandı — kayıt devam ediyor"
                     )
-                time.sleep(0.1)
                 continue
 
             silent_streak = 0
@@ -2279,8 +2310,6 @@ class TelegramBotManager:
                 )
             except Exception as e:
                 self.logger.error(f"Mic send error: {e}")
-
-            time.sleep(0.1)
 
         self._mic_continuous_active = False
         self.bot.send_message(
