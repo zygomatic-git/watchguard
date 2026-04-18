@@ -1281,15 +1281,20 @@ class MicRecorder:
             # ── VAD: speech detection ────────────────────────────────────────
             is_silent = self._vad_check(audio.flatten(), sr)
 
-            # ── Encode: Opus (preferred) → WAV fallback ──────────────────────
+            # ── Encode: Opus → FLAC → WAV ────────────────────────────────────
             buf = self._encode_opus(audio, sr)
             if buf:
                 fmt = "OGG/Opus"
                 buf.name = "mic.ogg"
             else:
-                buf = self._encode_wav(audio, sr)
-                fmt = "WAV"
-                buf.name = "mic.wav"
+                buf = self._encode_flac(audio, sr)
+                if buf:
+                    fmt = "FLAC"
+                    buf.name = "mic.flac"
+                else:
+                    buf = self._encode_wav(audio, sr)
+                    fmt = "WAV"
+                    buf.name = "mic.wav"
 
             size_kb = buf.getbuffer().nbytes / 1024
             self.logger.info(f"Mic done: {size_kb:.1f} KB [{fmt}]  silent={is_silent}")
@@ -1394,9 +1399,33 @@ class MicRecorder:
 
     # ── encoders ──────────────────────────────────────────────────────────────
 
+    def _encode_flac(self, audio: 'np.ndarray', sr: int) -> Optional[io.BytesIO]:
+        """Encode to FLAC via soundfile. ~55% smaller than WAV, lossless, no extra deps."""
+        try:
+            import soundfile as sf
+            import numpy as np
+            buf = io.BytesIO()
+            sf.write(buf, audio.flatten().astype(np.float32) / 32768.0,
+                     sr, format='FLAC')
+            buf.seek(0)
+            return buf
+        except Exception as e:
+            self.logger.warning(f"FLAC encoding failed, falling back to WAV: {e}")
+            return None
+
     def _encode_opus(self, audio: 'np.ndarray', sr: int) -> Optional[io.BytesIO]:
         """Encode int16 numpy array to OGG/Opus via pyogg. Returns None if unavailable."""
         try:
+            # Help Python 3.8+ find pyogg's bundled libopus/libogg DLLs
+            import importlib.util as _ilu
+            _spec = _ilu.find_spec('pyogg')
+            if _spec:
+                import os as _os
+                try:
+                    _os.add_dll_directory(_os.path.dirname(_spec.origin))
+                except (AttributeError, OSError):
+                    pass
+
             import pyogg                                    # pip install pyogg
             import numpy as np
 
