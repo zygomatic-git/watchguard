@@ -396,9 +396,10 @@ function Invoke-Uninstall {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ACTION 3: STOP PROCESSES
+# ACTION 3: START / STOP TOGGLE
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Stop only — used internally by Uninstall and Install
 function Invoke-KillProcesses {
     param([switch]$Silent)
 
@@ -428,6 +429,43 @@ function Invoke-KillProcesses {
     return $true
 }
 
+# Toggle — shown in the main menu as [3]
+function Invoke-ToggleBot {
+    Write-Host ""
+    $procs = Get-Process -Name "pythonw" -ErrorAction SilentlyContinue
+
+    if ($procs) {
+        # Bot is running -> stop it
+        Write-Host "  Found processes:" -ForegroundColor Yellow
+        $procs | ForEach-Object { Write-Host "    PID $($_.Id)  Memory: $([math]::Round($_.WorkingSet64/1MB,1)) MB" -ForegroundColor Gray }
+        Write-Host ""
+        $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+        Write-OK "$($procs.Count) process(es) stopped."
+    } else {
+        # Bot is stopped -> start it
+        if (-not (Test-Path $scriptDest)) {
+            Write-Err "Bot script not found: $scriptDest"
+            Write-Info "Please run Install first."
+            Write-Host ""
+            return
+        }
+
+        $pyInfo = Find-Python
+        if (-not $pyInfo) {
+            Write-Err "Python not found. Cannot start bot."
+            Write-Host ""
+            return
+        }
+
+        $pythonwExe = $pyInfo.pythonw
+        if (-not $pythonwExe -or -not (Test-Path $pythonwExe)) { $pythonwExe = $pyInfo.python }
+
+        Start-Process -FilePath $pythonwExe -ArgumentList "`"$scriptDest`"" -WindowStyle Hidden
+        Write-OK "Bot started - waiting for Telegram notification..."
+    }
+    Write-Host ""
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN MENU
 # ══════════════════════════════════════════════════════════════════════════════
@@ -436,10 +474,10 @@ while ($true) {
     Write-Banner
 
     # Show installation status
+    $running = (Get-Process -Name "pythonw" -ErrorAction SilentlyContinue).Count
     if (Test-Path $datPath) {
         Write-Host "  Status : " -NoNewline -ForegroundColor Gray
         Write-Host "Installed " -NoNewline -ForegroundColor Green
-        $running = (Get-Process -Name "pythonw" -ErrorAction SilentlyContinue).Count
         if ($running -gt 0) { Write-Host "| Running ($running process)" -ForegroundColor Green } else {
             Write-Host "| Stopped" -ForegroundColor Yellow
         }
@@ -448,11 +486,13 @@ while ($true) {
         Write-Host "Not installed" -ForegroundColor Red
     }
 
+    $toggleLabel = if ($running -gt 0) { "Stop Bot" } else { "Start Bot" }
+
     Write-Host ""
     Write-Host "  --------------------------------------------------------" -ForegroundColor DarkGray
     Write-Host "  [1]  Install / Reinstall" -ForegroundColor White
     Write-Host "  [2]  Uninstall" -ForegroundColor White
-    Write-Host "  [3]  Stop Running Processes" -ForegroundColor White
+    Write-Host "  [3]  $toggleLabel" -ForegroundColor White
     Write-Host "  [4]  Exit" -ForegroundColor White
     Write-Host "  --------------------------------------------------------" -ForegroundColor DarkGray
     Write-Host ""
@@ -460,9 +500,9 @@ while ($true) {
     $choice = Read-Host "  Choice"
 
     switch ($choice.Trim()) {
-        "1" { Invoke-Install;         Read-Host "  Press Enter to return to menu" }
-        "2" { Invoke-Uninstall;       Read-Host "  Press Enter to return to menu" }
-        "3" { Invoke-KillProcesses;   Read-Host "  Press Enter to return to menu" }
+        "1" { Invoke-Install;       Read-Host "  Press Enter to return to menu" }
+        "2" { Invoke-Uninstall;     Read-Host "  Press Enter to return to menu" }
+        "3" { Invoke-ToggleBot;     Read-Host "  Press Enter to return to menu" }
         "4" {
             # Self-delete and exit
             Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
