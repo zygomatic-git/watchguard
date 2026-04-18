@@ -42,6 +42,7 @@ KURULUM:
 
 import os
 import sys
+import io
 import time
 import threading
 import tempfile
@@ -1197,51 +1198,87 @@ class VideoRecorder:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MicRecorder:
+    """
+    In-memory microphone recorder with energy-based VAD.
+    - Captures via sounddevice (16 kHz mono int16)
+    - Encodes to WAV in RAM using stdlib wave — no disk writes, no extra deps
+    - VAD: skips chunks that are below RMS noise floor
+    """
+
+    SAMPLE_RATE   = 16000
+    CHUNK_SECONDS = 30       # continuous-mode chunk length
+    VAD_THRESHOLD = 0.015    # normalised RMS threshold  (0.0 – 1.0)
+    VAD_MIN_RATIO = 0.08     # fraction of samples that must exceed threshold
+
     def __init__(self, logger: LogManager):
         self.logger     = logger
-        self.recording  = False
         self.last_error: Optional[str] = None
+        self._lock      = threading.Lock()
+        self._recording = False
 
-    def record(self, duration: int = None) -> Optional[str]:
-        if self.recording:
-            self.logger.warning("Zaten bir mikrofon kaydı devam ediyor")
-            return None
-
-        duration = min(duration or Config.MIC_DURATION, Config.MIC_MAX_DURATION)
-
-        try:
-            import sounddevice as sd
-            import soundfile as sf
-            self.recording = True
-            self.logger.info(f"Mikrofon kaydı başlatıldı: {duration}s")
-
-            sample_rate = 16000
-            audio = sd.rec(int(duration * sample_rate),
-                           samplerate=sample_rate, channels=1, dtype='float32')
-            sd.wait()
-
-            fd, output = tempfile.mkstemp(suffix='.ogg')
-            os.close(fd)
-            sf.write(output, audio, sample_rate, format='OGG', subtype='VORBIS')
-
-            size_kb = os.path.getsize(output) / 1024
-            self.logger.info(f"Mikrofon kaydedildi: {size_kb:.1f} KB (OGG)")
-            return output
-
-        except Exception as e:
-            self.last_error = str(e)
-            self.logger.error(f"Mikrofon kayıt hatası: {e}")
-            return None
-        finally:
-            self.recording = False
+    # ── public API ────────────────────────────────────────────────────────────
 
     def has_microphone(self) -> bool:
         try:
             import sounddevice as sd
-            devices = sd.query_devices()
-            return any(d['max_input_channels'] > 0 for d in devices)
+            return any(d['max_input_channels'] > 0 for d in sd.query_devices())
         except Exception:
             return False
+
+    def record(self, duration: int) -> Optional[Tuple[io.BytesIO, bool]]:
+        """
+        Record *duration* seconds from the default input device.
+
+        Returns (wav_buf: BytesIO, is_silent: bool) on success, None on error.
+        The BytesIO is positioned at 0 and ready to send directly to Telegram.
+        """
+        with self._lock:
+            if self._recording:
+                self.last_error = "Already recording"
+                return None
+            self._recording = True
+
+        try:
+            import sounddevice as sd
+            import numpy as np
+            import wave
+
+            sr     = self.SAMPLE_RATE
+            frames = int(duration * sr)
+
+            self.logger.info(f"Mic recording: {duration}s")
+            audio = sd.rec(frames, samplerate=sr, channels=1,
+                           dtype='int16', blocking=True)  # blocks until done
+
+            # ── VAD: energy check ────────────────────────────────────────────
+            flat       = audio.flatten().astype(np.float32) / 32768.0
+            n_above    = int(np.sum(np.abs(flat) > self.VAD_THRESHOLD))
+            is_silent  = (n_above / max(len(flat), 1)) < self.VAD_MIN_RATIO
+
+            # ── Encode to in-memory WAV (stdlib, always available) ───────────
+            buf = io.BytesIO()
+            with wave.open(buf, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)        # int16 = 2 bytes per sample
+                wf.setframerate(sr)
+                wf.writeframes(audio.tobytes())
+            buf.seek(0)
+
+            size_kb = buf.getbuffer().nbytes / 1024
+            self.logger.info(
+                f"Mic done: {size_kb:.1f} KB  silent={is_silent}  "
+                f"active={n_above}/{len(flat)} samples"
+            )
+            self.last_error = None
+            return buf, is_silent
+
+        except Exception as e:
+            self.last_error = str(e) or repr(e) or type(e).__name__
+            self.logger.error(f"Mic error: {self.last_error}")
+            return None
+        finally:
+            with self._lock:
+                self._recording = False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2174,58 +2211,83 @@ class TelegramBotManager:
             self.bot.send_message(chat_id, "❌ Mikrofon bulunamadı")
             return
 
-        dur = duration or Config.MIC_DURATION
-        self.bot.send_message(chat_id,
-            f"🎙️ Mikrofon kaydı başlıyor ({dur}s)...\n{self.identity.display_name()}")
+        dur = min(duration or Config.MIC_DURATION, Config.MIC_MAX_DURATION)
+        status = self.bot.send_message(chat_id, f"🎙️ Kaydediliyor ({dur}s)...")
 
         def do():
-            path = self.mic_recorder.record(dur)
-            if path:
+            result = self.mic_recorder.record(dur)
+            if result:
+                buf, is_silent = result
+                buf.name = "mic.wav"
+                label = f"🎙️ {'[sessiz] ' if is_silent else ''}Mikrofon — {datetime.now().strftime('%H:%M:%S')}"
                 try:
-                    with open(path, 'rb') as f:
-                        self.bot.send_audio(chat_id, f,
-                                            title=f"Mikrofon — {datetime.now().strftime('%H:%M:%S')}",
-                                            performer=self.identity.display_name())
-                    os.remove(path)
+                    self.bot.delete_message(chat_id, status.message_id)
+                    self.bot.send_audio(chat_id, buf,
+                                        title=label,
+                                        performer=self.identity.display_name())
                 except Exception as e:
                     self.bot.send_message(chat_id, f"❌ Ses gönderilemedi: {e}")
             else:
-                error_detail = self.mic_recorder.last_error or "Bilinmeyen hata"
-                self.bot.send_message(chat_id, f"❌ Mikrofon: {error_detail}")
+                err = self.mic_recorder.last_error or "Bilinmeyen hata"
+                self.bot.edit_message_text(f"❌ Mikrofon: {err}", chat_id, status.message_id)
 
         threading.Thread(target=do, daemon=True).start()
 
     def _handle_mic_continuous(self, chat_id: int):
-        """Sürekli 1 dk'lık ses kaydı döngüsü — /mic off ile durdurulur."""
+        """
+        30 saniyelik VAD'lı sürekli kayıt döngüsü.
+        Sessiz chunk'lar gönderilmez; /mic off ile durur.
+        """
+        chunk   = MicRecorder.CHUNK_SECONDS
         segment = 0
+        silent_streak = 0
+        SILENT_NOTIFY = 4   # 4 × 30 s = 2 dakika sessizlik bildirimi
+
         while not self._mic_stop_event.is_set():
-            segment += 1
-            path = self.mic_recorder.record(60)  # 1 dakika
+            result = self.mic_recorder.record(chunk)
+
             if self._mic_stop_event.is_set():
-                if path:
-                    try: os.remove(path)
-                    except Exception: pass
-                break
-            if path:
-                try:
-                    with open(path, 'rb') as f:
-                        self.bot.send_audio(
-                            chat_id, f,
-                            title=f"Mikrofon #{segment} — {datetime.now().strftime('%H:%M:%S')}",
-                            performer=self.identity.display_name(),
-                            timeout=60
-                        )
-                    os.remove(path)
-                except Exception as e:
-                    self.logger.error(f"Sürekli mic gönderme hatası: {e}")
-            else:
-                error_detail = self.mic_recorder.last_error or "Bilinmeyen hata"
-                self.bot.send_message(chat_id, f"❌ Mikrofon kayıt hatası: {error_detail}")
                 break
 
+            if result is None:
+                err = self.mic_recorder.last_error or "Bilinmeyen hata"
+                self.bot.send_message(chat_id, f"⚠️ Kayıt hatası: {err} — 3s sonra yeniden deneniyor")
+                time.sleep(3)
+                continue
+
+            buf, is_silent = result
+
+            if is_silent:
+                silent_streak += 1
+                if silent_streak == SILENT_NOTIFY:
+                    self.bot.send_message(
+                        chat_id,
+                        f"🔇 {silent_streak * chunk}s sessizlik — kayıt devam ediyor"
+                    )
+                time.sleep(0.1)
+                continue
+
+            silent_streak = 0
+            segment += 1
+            buf.name = f"mic_{segment}.wav"
+            try:
+                self.bot.send_audio(
+                    chat_id, buf,
+                    title=f"🎙️ #{segment} — {datetime.now().strftime('%H:%M:%S')}",
+                    performer=self.identity.display_name(),
+                    timeout=60
+                )
+            except Exception as e:
+                self.logger.error(f"Mic send error: {e}")
+
+            time.sleep(0.1)
+
         self._mic_continuous_active = False
-        self.bot.send_message(chat_id,
-            f"🛑 Sürekli kayıt durduruldu ({segment} segment)\n{self.identity.display_name()}")
+        self.bot.send_message(
+            chat_id,
+            f"🛑 Kayıt durduruldu — {segment} segment gönderildi\n"
+            f"{self.identity.display_name()}"
+        )
 
     # ── Servisler ─────────────────────────────────────────────────────────────
 
