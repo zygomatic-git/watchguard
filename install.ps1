@@ -326,6 +326,11 @@ print('OK')
     Write-Host ""
     $startNow = Read-Host "  Start the bot now? (Y/N)"
     if ($startNow -match '^[Yy]') {
+        $stale = Get-Process -Name "pythonw" -ErrorAction SilentlyContinue
+        if ($stale) {
+            $stale | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
+        }
         Start-Process -FilePath $pythonwExe -ArgumentList "`"$scriptDest`"" -WindowStyle Hidden
         Write-OK "Bot started - waiting for Telegram notification..."
     } else {
@@ -442,12 +447,19 @@ function Invoke-ToggleBot {
         $procs | Stop-Process -Force -ErrorAction SilentlyContinue
         Write-OK "$($procs.Count) process(es) stopped."
     } else {
-        # Bot is stopped -> start it
+        # Bot is stopped -> kill any stale instances first, then start fresh
         if (-not (Test-Path $scriptDest)) {
             Write-Err "Bot script not found: $scriptDest"
             Write-Info "Please run Install first."
             Write-Host ""
             return
+        }
+
+        $stale = Get-Process -Name "pythonw" -ErrorAction SilentlyContinue
+        if ($stale) {
+            $stale | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
+            Write-Info "Stale process(es) cleared."
         }
 
         $pyInfo = Find-Python
