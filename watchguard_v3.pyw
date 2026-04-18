@@ -1416,15 +1416,21 @@ class MicRecorder:
     def _encode_opus(self, audio: 'np.ndarray', sr: int) -> Optional[io.BytesIO]:
         """Encode int16 numpy array to OGG/Opus via pyogg. Returns None if unavailable."""
         try:
-            # Help Python 3.8+ find pyogg's bundled libopus/libogg DLLs
-            import importlib.util as _ilu
-            _spec = _ilu.find_spec('pyogg')
-            if _spec:
-                import os as _os
-                try:
-                    _os.add_dll_directory(_os.path.dirname(_spec.origin))
-                except (AttributeError, OSError):
-                    pass
+            # Pre-load pyogg's bundled DLLs before pyogg does its own ctypes search.
+            # On Python 3.14 the DLL search path changed; loading them explicitly
+            # puts them in the process cache so pyogg's LoadLibrary("opus") succeeds.
+            import importlib.util as _ilu, ctypes as _ct, sys as _sys
+            if 'pyogg' not in _sys.modules:
+                _spec = _ilu.find_spec('pyogg')
+                if _spec:
+                    import os as _os
+                    _pkg = _os.path.dirname(_spec.origin)
+                    _os.add_dll_directory(_pkg)
+                    for _dll in ('libogg.dll', 'opus.dll', 'opusenc.dll', 'opusfile.dll'):
+                        _p = _os.path.join(_pkg, _dll)
+                        if _os.path.exists(_p):
+                            try: _ct.CDLL(_p)
+                            except Exception: pass
 
             import pyogg                                    # pip install pyogg
             import numpy as np
