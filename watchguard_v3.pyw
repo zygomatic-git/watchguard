@@ -1278,10 +1278,8 @@ class MicRecorder:
 
             audio = np.concatenate(chunks)
 
-            # ── VAD: energy check ────────────────────────────────────────────
-            flat      = audio.flatten().astype(np.float32) / 32768.0
-            n_above   = int(np.sum(np.abs(flat) > self.VAD_THRESHOLD))
-            is_silent = (n_above / max(len(flat), 1)) < self.VAD_MIN_RATIO
+            # ── VAD: speech detection ────────────────────────────────────────
+            is_silent = self._vad_check(audio.flatten(), sr)
 
             # ── Encode: Opus (preferred) → WAV fallback ──────────────────────
             buf = self._encode_opus(audio, sr)
@@ -1308,6 +1306,57 @@ class MicRecorder:
         finally:
             with self._lock:
                 self._recording = False
+
+    # ── VAD ───────────────────────────────────────────────────────────────────
+
+    def _vad_check(self, audio_flat: 'np.ndarray', sr: int) -> bool:
+        """
+        Returns True (silent/no speech) or False (speech detected).
+
+        Uses webrtcvad if available (accurate speech detector).
+        Falls back to simple energy check if webrtcvad is not installed.
+        """
+        # ── webrtcvad (preferred) ────────────────────────────────────────────
+        try:
+            import webrtcvad
+            import numpy as np
+
+            vad = webrtcvad.Vad(2)          # aggressiveness 0–3 (2 = balanced)
+
+            # webrtcvad needs 10/20/30 ms int16 PCM frames
+            frame_ms   = 20
+            frame_size = int(sr * frame_ms / 1000)   # 320 samples @ 16 kHz
+            frame_bytes = frame_size * 2              # int16
+
+            raw = audio_flat.astype(np.int16).tobytes()
+            speech = total = 0
+            for i in range(0, len(raw) - frame_bytes + 1, frame_bytes):
+                frame = raw[i:i + frame_bytes]
+                total += 1
+                try:
+                    if vad.is_speech(frame, sr):
+                        speech += 1
+                except Exception:
+                    pass
+
+            if total == 0:
+                return True
+            ratio = speech / total
+            self.logger.info(f"VAD (webrtc): {speech}/{total} speech frames ({ratio:.1%})")
+            return ratio < 0.08          # < 8 % speech frames → silent
+
+        except ImportError:
+            pass
+        except Exception as e:
+            self.logger.warning(f"webrtcvad error: {e}")
+
+        # ── energy fallback ──────────────────────────────────────────────────
+        import numpy as np
+        flat      = audio_flat.astype(np.float32) / 32768.0
+        n_above   = int(np.sum(np.abs(flat) > self.VAD_THRESHOLD))
+        ratio     = n_above / max(len(flat), 1)
+        self.logger.info(f"VAD (energy): {n_above}/{len(flat)} samples above threshold ({ratio:.1%})")
+        return ratio < self.VAD_MIN_RATIO
 
     # ── encoders ──────────────────────────────────────────────────────────────
 

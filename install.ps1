@@ -303,7 +303,7 @@ print('OK')
     $packages = @(
         "pyTelegramBotAPI","pyautogui","pillow","psutil",
         "opencv-python","numpy","pynput","screeninfo",
-        "mss","sounddevice","soundfile","dxcam","pyogg"
+        "mss","sounddevice","soundfile","dxcam","pyogg","webrtcvad"
     )
     Write-Step "Installing dependencies ($($packages.Count) packages)..."
     & $pythonExe -m pip install @packages --quiet 2>&1 | Out-Null
