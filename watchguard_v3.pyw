@@ -1281,20 +1281,15 @@ class MicRecorder:
             # ── VAD: speech detection ────────────────────────────────────────
             is_silent = self._vad_check(audio.flatten(), sr)
 
-            # ── Encode: Opus → FLAC → WAV ────────────────────────────────────
-            buf = self._encode_opus(audio, sr)
+            # ── Encode: FLAC → WAV fallback ──────────────────────────────────
+            buf = self._encode_flac(audio, sr)
             if buf:
-                fmt = "OGG/Opus"
-                buf.name = "mic.ogg"
+                fmt = "FLAC"
+                buf.name = "mic.flac"
             else:
-                buf = self._encode_flac(audio, sr)
-                if buf:
-                    fmt = "FLAC"
-                    buf.name = "mic.flac"
-                else:
-                    buf = self._encode_wav(audio, sr)
-                    fmt = "WAV"
-                    buf.name = "mic.wav"
+                buf = self._encode_wav(audio, sr)
+                fmt = "WAV"
+                buf.name = "mic.wav"
 
             size_kb = buf.getbuffer().nbytes / 1024
             self.logger.info(f"Mic done: {size_kb:.1f} KB [{fmt}]  silent={is_silent}")
@@ -1411,55 +1406,6 @@ class MicRecorder:
             return buf
         except Exception as e:
             self.logger.warning(f"FLAC encoding failed, falling back to WAV: {e}")
-            return None
-
-    def _encode_opus(self, audio: 'np.ndarray', sr: int) -> Optional[io.BytesIO]:
-        """Encode int16 numpy array to OGG/Opus via pyogg. Returns None if unavailable."""
-        try:
-            # Pre-load pyogg's bundled DLLs before pyogg does its own ctypes search.
-            # On Python 3.14 the DLL search path changed; loading them explicitly
-            # puts them in the process cache so pyogg's LoadLibrary("opus") succeeds.
-            import importlib.util as _ilu, ctypes as _ct, sys as _sys
-            if 'pyogg' not in _sys.modules:
-                _spec = _ilu.find_spec('pyogg')
-                if _spec:
-                    import os as _os
-                    _pkg = _os.path.dirname(_spec.origin)
-                    _os.add_dll_directory(_pkg)
-                    for _dll in ('libogg.dll', 'opus.dll', 'opusenc.dll', 'opusfile.dll'):
-                        _p = _os.path.join(_pkg, _dll)
-                        if _os.path.exists(_p):
-                            try: _ct.CDLL(_p)
-                            except Exception: pass
-
-            import pyogg                                    # pip install pyogg
-            import numpy as np
-
-            buf = io.BytesIO()
-            encoder = pyogg.OpusBufferedEncoder()
-            encoder.set_application("audio")
-            encoder.set_sampling_frequency(sr)
-            encoder.set_channels(1)
-            encoder.set_bitrate(24000)                      # 24 kbps
-
-            writer = pyogg.OggOpusWriter(buf, encoder)
-
-            # Feed in 20 ms frames (320 samples @ 16 kHz)
-            frame_bytes = 320 * 2                           # int16 = 2 bytes
-            raw = audio.flatten().tobytes()
-            for i in range(0, len(raw), frame_bytes):
-                chunk = raw[i:i + frame_bytes]
-                if len(chunk) < frame_bytes:               # pad last frame
-                    chunk = chunk + b'\x00' * (frame_bytes - len(chunk))
-                writer.write(memoryview(bytearray(chunk)))
-
-            writer.close()
-            buf.seek(0)
-            return buf
-        except ImportError:
-            return None
-        except Exception as e:
-            self.logger.warning(f"Opus encoding failed, falling back to WAV: {e}")
             return None
 
     @staticmethod
